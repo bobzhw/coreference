@@ -1,12 +1,18 @@
-#coding=utf-8
+"""
+Implementation of Hobbs' algorithm for pronoun resolution.
+Chris Ward, 2014
+"""
+
+import sys
 import nltk
 from nltk.corpus import names
 from nltk import Tree
 from queue import Queue
-from py2neo import Graph,Node,Relationship
+
+
 # Labels for nominal heads
-nominal_labels = ["NP", "NNS", "NNP", "NNPS", "PRP","NN"]
-graph = Graph('bolt://192.168.1.70:7687',username='neo4j',password='ad201')
+nominal_labels = ["NN", "NNS", "NNP", "NNPS", "PRP"]
+
 def get_pos(tree, node):
     """ Given a tree and a node, return the tree position
     of the node. 
@@ -34,7 +40,7 @@ def get_dom_np(sents, pos):
     dom_pos = pos[:-1]
     return tree, dom_pos
     
-def walk_to_np_or_s(tree, pos,dcpos):
+def walk_to_np_or_s(tree, pos):
     """ Takes the tree being searched and the position from which 
     the walk up is started. Returns the position of the first NP
     or S encountered and the path taken to get there from the 
@@ -55,12 +61,13 @@ def walk_to_np_or_s(tree, pos,dcpos):
         pos = pos[:-1]
         path.append(pos)
         # if an NP or S node is encountered, return the path and pos
-        if "NP" in tree[pos].label() or tree[pos].label() == "ROOT" or tree[pos].label() == "IP":
+        if "NP" in tree[pos].label() or tree[pos].label() == "S":
             still_looking = False
     return path, pos
 
 def bft(tree):
-    """ Perform a   a list in level-order.
+    """ Perform a breadth-first traversal of a tree.
+    Return the nodes in a list in level-order.
 
     Args:
         tree: a tree node
@@ -82,8 +89,6 @@ def count_np_nodes(tree):
     """ Function from class to count NP nodes.
     """
     np_count = 0
-    print(tree.label())
-
     if not isinstance(tree, nltk.Tree):
         return 0
     elif "NP" in tree.label() and tree.label() not in nominal_labels:
@@ -182,7 +187,7 @@ def traverse_right(tree, pos, path, pro):
 
     for p in bf_pos:
         if p>path[0] and p not in path:
-            if "NP" in tree[p].label() or tree[p].label() == "ROOT" or tree[pos].label() == "IP":
+            if "NP" in tree[p].label() or tree[p].label() == "S":
                 if "NP" in tree[p].label() and tree[p].label() not in nominal_labels:
                     if match(tree, p, pro):
                         return tree, p
@@ -203,7 +208,6 @@ def traverse_tree(tree, pro):
     while not queue.empty():
         node = queue.get()
         # if the node is an NP, return it as a potential antecedent
-        print(node.label())
         if "NP" in node.label() and match(tree, get_pos(tree,node), pro):
             return tree, get_pos(tree, node)
         for child in node:
@@ -211,11 +215,6 @@ def traverse_tree(tree, pro):
                 queue.put(child)
     # if no antecedent is found, return None
     return None, None
-
-def graph_match(tree,pos,pro):
-
-    return True
-
 
 def match(tree, pos, pro):
     """ Takes a proposed antecedent and checks whether it matches
@@ -229,7 +228,7 @@ def match(tree, pos, pro):
         True if the antecedent and pronoun match
         False otherwise
     """
-    if number_match(tree, pos, pro) and graph_match(tree,pos,pro):
+    if number_match(tree, pos, pro) and gender_match(tree, pos, pro):
         return True
     return False
 
@@ -237,31 +236,27 @@ def number_match(tree, pos, pro):
     """ Takes a proposed antecedent and pronoun and checks whether 
     they match in number.
     """
-    m = {
-        "NN":          "singular",
+    m = {"NN":          "singular",
          "NNP":         "singular",
-         "它":          "singular",
-         "他":         "singular",
-         "她":         "singular",
-         "这个":         "singular",
-         "其":           "singular",
-         "他自己":     "singular",
-         "它自己":     "singular",
-         "她自己":      "singular",
+         "he":          "singular",
+         "she":         "singular",
+         "him":         "singular",
+         "her":         "singular",
+         "it":          "singular",
+         "himself":     "singular",
+         "herself":     "singular",
+         "itself":      "singular",
          "NNS":         "plural",
          "NNPS":        "plural",
-         "他们":        "plural",
-         "这些":        "plural",
-         "她们":      "plural",
-         "它们":      "plural",
+         "they":        "plural",
+         "them":        "plural",
+         "themselves":  "plural",
          "PRP":         None}
     
     # if the label of the nominal dominated by the proposed NP and 
     # the pronoun both map to the same number feature, they match 
     for c in tree[pos]:
         if isinstance(c, nltk.Tree) and c.label() in nominal_labels:
-            if c.label() not in m:
-                return False
             if m[c.label()] == m[pro]:
                 return True
     return False
@@ -319,18 +314,16 @@ def hobbs(sents, pos):
     sentence_id = len(sents)-1
     # The number of sentences to be searched
     num_sents = len(sents)
-    dcpos = pos
+
     # Step 1: begin at the NP node immediately dominating the pronoun
     tree, pos = get_dom_np(sents, pos)
 
     # String representation of the pronoun to be resolved
     pro = tree[pos].leaves()[0].lower()
 
-
     # Step 2: Go up the tree to the first NP or S node encountered
-    path, pos = walk_to_np_or_s(tree, pos,dcpos)
-
-
+    path, pos = walk_to_np_or_s(tree, pos)
+    
     # Step 3: Traverse all branches below pos to the left of path
     # left-to-right, breadth-first. Propose as an antecedent any NP
     # node that is encountered which has an NP or S node between it and pos
@@ -348,7 +341,7 @@ def hobbs(sents, pos):
             sentence_id -= 1
             # if there are no more sentences, no antecedent found
             if sentence_id < 0:
-                return (None,None)
+                return None
             # search new sentence
             proposal = traverse_tree(sents[sentence_id], pro)
             if proposal != (None, None):
@@ -356,7 +349,7 @@ def hobbs(sents, pos):
 
         # Step 5: If pos is not the highest S in the sentence, from pos,
         # go up the tree to the first NP or S node encountered. 
-        path, pos = walk_to_np_or_s(tree, pos,dcpos)
+        path, pos = walk_to_np_or_s(tree, pos)
         
         # Step 6: If pos is an NP node and if the path to pos did not pass 
         # through the nominal node that pos immediately dominates, propose pos 
@@ -380,7 +373,7 @@ def hobbs(sents, pos):
         # to the right of path in a left-to-right, breadth-forst manner, but
         # do not go below any NP or S node encountered. Propose any NP node
         # encountered as the antecedent.
-        if tree[pos].label() == "ROOT" or tree[pos].label() == "IP":
+        if tree[pos].label() == "S":
             proposal = traverse_right(tree, pos, path, pro)
             if proposal != (None, None):
                 return proposal
@@ -428,15 +421,65 @@ def walk_to_s(tree, pos):
         pos = pos[:-1]
         path.append(pos)
         # if an S node is encountered, return the path and pos
-        if tree[pos].label() == "ROOT" or tree[pos].label() == "IP":
+        if tree[pos].label() == "S":
             still_looking = False
     return path, pos
 
 
 
+
+def demo():
+    tree1 = Tree.fromstring('(S (NP (NNP John) ) (VP (VBD said) (SBAR (-NONE- 0) \
+        (S (NP (PRP he) ) (VP (VBD likes) (NP (NNS dogs) ) ) ) ) ) )')
+    tree2 = Tree.fromstring('(S (NP (NNP John) ) (VP (VBD said) (SBAR (-NONE- 0) \
+        (S (NP (NNP Mary) ) (VP (VBD likes) (NP (PRP him) ) ) ) ) ) )')
+    tree3 = Tree.fromstring('(S (NP (NNP John)) (VP (VBD saw) (NP (DT a) \
+        (JJ flashy) (NN hat)) (PP (IN at) (NP (DT the) (NN store)))))')
+    tree4 = Tree.fromstring('(S (NP (PRP He)) (VP (VBD showed) (NP (PRP it)) \
+        (PP (IN to) (NP (NNP Terrence)))))')
+    tree5 = Tree.fromstring("(S(NP-SBJ (NNP Judge) (NNP Curry))\
+        (VP(VP(VBD ordered)(NP-1 (DT the) (NNS refunds))\
+        (S(NP-SBJ (-NONE- *-1))(VP (TO to) (VP (VB begin)\
+        (NP-TMP (NNP Feb.) (CD 1))))))(CC and)\
+        (VP(VBD said)(SBAR(IN that)(S(NP-SBJ (PRP he))(VP(MD would)\
+        (RB n't)(VP(VB entertain)(NP(NP (DT any) (NNS appeals))(CC or)\
+        (NP(NP(JJ other)(NNS attempts)(S(NP-SBJ (-NONE- *))(VP(TO to)\
+        (VP (VB block) (NP (PRP$ his) (NN order))))))(PP (IN by)\
+        (NP (NNP Commonwealth) (NNP Edison)))))))))))(. .))")
+    tree6 = Tree.fromstring('(S (NP (NNP John) ) (VP (VBD said) (SBAR (-NONE- 0) \
+        (S (NP (NNP Mary) ) (VP (VBD likes) (NP (PRP herself) ) ) ) ) ) )')
+
+    # print "Sentence 1:"
+    # print tree1
+    # tree, pos = hobbs([tree1], (1,1,1,0,0))
+    # print "Proposed antecedent for 'he':", tree[pos], '\n'
+    #
+    # print "Sentence 2:"
+    # print tree2
+    # tree, pos = hobbs([tree2], (1,1,1,1,1,0))
+    # print "Proposed antecedent for 'him':", tree[pos], '\n'
+    #
+    # print "Sentence 3:"
+    # print tree3
+    # print "Sentence 4:"
+    # print tree4
+    # tree, pos = hobbs([tree3,tree4], (1,1,0))
+    # print "Proposed antecedent for 'it':", tree[pos]
+    # tree, pos = hobbs([tree3,tree4], (0,0))
+    # print "Proposed antecedent for 'he':", tree[pos], '\n'
+    #
+    # print "Sentence 5:"
+    # print tree5
+    # tree, pos = hobbs([tree5], (1,2,1,1,0,0))
+    # print "Proposed antecedent for 'he':", tree[pos], '\n'
+    #
+    # print "Sentence 6:"
+    # print tree6
+    # tree, pos = resolve_reflexive([tree6], (1,1,1,1,1,0))
+    # print "Proposed antecedent for 'herself':", tree[pos], '\n'
 if __name__ == "__main__":
-    tree = Tree.fromstring('(ROOT(IP(VP(LCP(NP(ADJP (JJ 三角形))(NP (NN ABC)))(LC 中))(PU ，)(ADVP (AD AB))(VP (VC 是)(NP(DNP(NP (PN 它))(DEG 的))(NP (NN 中点)))))))')
+    tree = Tree.fromstring(
+        '(ROOT(IP(VP(LCP(NP(ADJP (JJ 三角形))(NP (NN ABC)))(LC 中))(PU ，)(ADVP (AD AB))(VP (VC 是)(NP(DNP(NP (PN 它))(DEG 的))(NP (NN 中点)))))))')
     tree.draw()
-    tree, pos = hobbs([tree], (0,0,3,1,0,0,0))
+    tree, pos = hobbs([tree], (0, 0, 3, 1, 0, 0, 0))
     print("Proposed antecedent for '它':", tree[pos], '\n')
-    # demo()
