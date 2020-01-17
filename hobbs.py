@@ -3,10 +3,18 @@ import nltk
 from nltk.corpus import names
 from nltk import Tree
 from queue import Queue
+import re
 from py2neo import Graph,Node,Relationship
 # Labels for nominal heads
 nominal_labels = ["NP", "NNS", "NNP", "NNPS", "PRP","NN"]
 graph = Graph('bolt://192.168.1.70:7687',username='neo4j',password='ad201')
+
+file = open('entityProperties','r',encoding='utf-8')
+entityProperties = dict()
+for line in file.readlines():
+    group = line.strip().split(' ')
+    entityProperties[group[0]]=group[1:]
+
 def get_pos(tree, node):
     """ Given a tree and a node, return the tree position
     of the node. 
@@ -47,12 +55,15 @@ def walk_to_np_or_s(tree, pos,dcpos):
         path: the path taken to get the an NP or S node
         pos: the position of the first NP or S node encountered
     """
+    print(tree[pos])
     path = [pos]
     still_looking = True
     while still_looking:
         # climb one level up the tree by removing the last element
         # from the current tree position
         pos = pos[:-1]
+        if len(pos)==0:
+            return path,pos
         path.append(pos)
         # if an NP or S node is encountered, return the path and pos
         if "NP" in tree[pos].label() or tree[pos].label() == "ROOT" or tree[pos].label() == "IP":
@@ -82,13 +93,14 @@ def count_np_nodes(tree):
     """ Function from class to count NP nodes.
     """
     np_count = 0
-    print(tree.label())
-
     if not isinstance(tree, nltk.Tree):
         return 0
-    elif "NP" in tree.label() and tree.label() not in nominal_labels:
+
+    elif "NP" in tree.label():
+        print(tree.label())
         return 1 + sum(count_np_nodes(c) for c in tree)
     else:
+        print(tree.label())
         return sum(count_np_nodes(c) for c in tree)
 
 def check_for_intervening_np(tree, pos, proposal, pro):
@@ -119,7 +131,7 @@ def check_for_intervening_np(tree, pos, proposal, pro):
                         return True
     return False
 
-def traverse_left(tree, pos, path, pro, check=1):
+def traverse_left(tree, pos, path, pro, sentence,newsentence,dic,check=1):
     """ Traverse all branches below pos to the left of path in a
     left-to-right, breadth-first fashion. Returns the first potential
     antecedent found. 
@@ -150,19 +162,19 @@ def traverse_left(tree, pos, path, pro, check=1):
     if check == 1:
         for p in bf_pos:
             if p<path[0] and p not in path:
-                if "NP" in tree[p].label() and match(tree, p, pro):
-                    if check_for_intervening_np(tree, pos, p, pro) == True:
-                        return tree, p
+                if "NP" in tree[p].label() and match(tree, p, pro,sentence,newsentence,dic):
+                    # if check_for_intervening_np(tree, pos, p, pro) == True:
+                    return tree, p
 
     elif check == 0:
         for p in bf_pos:
             if p<path[0] and p not in path:
-                if "NP" in tree[p].label() and match(tree, p, pro):
+                if "NP" in tree[p].label() and match(tree, p, pro,sentence,newsentence,dic):
                     return tree, p
 
     return None, None
 
-def traverse_right(tree, pos, path, pro):
+def traverse_right(tree, pos, path, pro,sentence,newsentence,dic):
     """ Traverse all the branches of pos to the right of path p in a 
     left-to-right, breadth-first manner, but do not go below any NP 
     or S node encountered. Propose any NP node encountered as the 
@@ -184,11 +196,11 @@ def traverse_right(tree, pos, path, pro):
         if p>path[0] and p not in path:
             if "NP" in tree[p].label() or tree[p].label() == "ROOT" or tree[pos].label() == "IP":
                 if "NP" in tree[p].label() and tree[p].label() not in nominal_labels:
-                    if match(tree, p, pro):
+                    if match(tree, p, pro,sentence,newsentence,dic):
                         return tree, p
                 return None, None
 
-def traverse_tree(tree, pro):
+def traverse_tree(tree, pro,sentence,newsentence,dic):
     """ Traverse a tree in a left-to-right, breadth-first manner,
     proposing any NP encountered as an antecedent. Returns the 
     tree and the position of the first possible antecedent.
@@ -204,20 +216,90 @@ def traverse_tree(tree, pro):
         node = queue.get()
         # if the node is an NP, return it as a potential antecedent
         print(node.label())
-        if "NP" in node.label() and match(tree, get_pos(tree,node), pro):
+        if "NP" in node.label() and match(tree, get_pos(tree,node), pro,sentence,newsentence,dic):
             return tree, get_pos(tree, node)
         for child in node:
             if isinstance(child, nltk.Tree):
                 queue.put(child)
     # if no antecedent is found, return None
     return None, None
+def graph_match(tp,e,dic,words,index):
+    import nlpService
+    return nlpService.get_graph(tp,e,dic,words,index)
 
-def graph_match(tree,pos,pro):
 
-    return True
+def have_relation_match(tree,pos,pro,sentence,newsentence,dic):
+    import nlpService
+    dics = nlpService.getNlpResult(sentence)
+    entities = dics.entities
+    entities.sort(reverse=True)
+    faketext = dics.fakeText
+    words = re.split(' ',newsentence)
+    for c in tree[pos]:
+        tp=''
+        e=''
+        while isinstance(c,nltk.Tree):
+            c=c[0]
+        if isinstance(c,nltk.Tree) and c.__len__() == 1 and isinstance(c[0] , str):
+            for entity in entities:
+                def f(entity):
+                    types = entity.types
+                    flag = False
+                    if c[0] in dic.keys():
+                        if entity.name in dic[c[0]]:
+                            return True
+                        for type in types:
+                            if type in dic[c[0]]:
+                                return True
+                    return False
+                if f(entity):
+                    tp=entity.types[0]
+        elif isinstance(c,str):
+            for entity in entities:
+                def f(entity):
+                    types = entity.types
+                    flag = False
+                    if c in dic.keys():
+                        if entity.name in dic[c]:
+                            return True
+                        for type in types:
+                            if type in dic[c]:
+                                return True
+                    return False
+                if f(entity):
+                    print(entity.types[0])
+                    tp = entity.types[0]
+                    break
+        index = words.index(pro)
+        flag = False
+        for i in range(index+1,len(words)):
+            if words[i] in dic.keys():
+                e = entityHave(entities,dic[words[i]])
+            else:
+                entity_table = []
+                file = open('entity', 'r', encoding='utf-8')
+                for line in file.readlines():
+                    g = line.split("\t")
+                    entity_table.append(g[0].strip())
+                for entity in entity_table:
+                    if entity in words[i]:
+                        e=words[i]
+                if e=='':
+                    continue
+            flag=graph_match(tp,e,dic,words,i)
+            if flag:
+                return True
+            else:
+                return False
+    return False
 
+def entityHave(entities,word):
+    for e in entities:
+        if e.types[0] in word:
+            return e.types[0]
+    return word
 
-def match(tree, pos, pro):
+def match(tree, pos, pro,sentence,newsentence,dic):
     """ Takes a proposed antecedent and checks whether it matches
     the pronoun in number and gender
     
@@ -229,7 +311,7 @@ def match(tree, pos, pro):
         True if the antecedent and pronoun match
         False otherwise
     """
-    if number_match(tree, pos, pro) and graph_match(tree,pos,pro):
+    if have_relation_match(tree,pos,pro,sentence,newsentence,dic):
         return True
     return False
 
@@ -305,7 +387,7 @@ def gender_match(tree, pos, pro):
 
     return True
 
-def hobbs(sents, pos):
+def hobbs(sents, pos,sentence,newsentence,dic):
     """ The implementation of Hobbs' algorithm.
 
     Args:
@@ -334,7 +416,7 @@ def hobbs(sents, pos):
     # Step 3: Traverse all branches below pos to the left of path
     # left-to-right, breadth-first. Propose as an antecedent any NP
     # node that is encountered which has an NP or S node between it and pos
-    proposal = traverse_left(tree, pos, path, pro)
+    proposal = traverse_left(tree, pos, path, pro,sentence,newsentence,dic)
 
     while proposal == (None, None):
         
@@ -350,7 +432,7 @@ def hobbs(sents, pos):
             if sentence_id < 0:
                 return (None,None)
             # search new sentence
-            proposal = traverse_tree(sents[sentence_id], pro)
+            proposal = traverse_tree(sents[sentence_id], pro,sentence,newsentence,dic)
             if proposal != (None, None):
                 return proposal
 
@@ -364,7 +446,7 @@ def hobbs(sents, pos):
         if "NP" in tree[pos].label() and tree[pos].label() not in nominal_labels:
             for c in tree[pos]:
                 if isinstance(c, nltk.Tree) and c.label() in nominal_labels:
-                    if get_pos(tree, c) not in path and match(tree, pos, pro):
+                    if get_pos(tree, c) not in path and match(tree, pos, pro,sentence,newsentence,dic):
                         proposal = (tree, pos)
                         if proposal != (None, None):
                             return proposal
@@ -372,7 +454,7 @@ def hobbs(sents, pos):
         # Step 7: Traverse all branches below pos to the left of path, 
         # in a left-to-right, breadth-first manner. Propose any NP node
         # encountered as the antecedent.
-        proposal = traverse_left(tree, pos, path, pro, check=0)
+        proposal = traverse_left(tree, pos, path, pro,sentence,newsentence,dic, check=0)
         if proposal != (None, None):
             return proposal
 
@@ -381,7 +463,7 @@ def hobbs(sents, pos):
         # do not go below any NP or S node encountered. Propose any NP node
         # encountered as the antecedent.
         if tree[pos].label() == "ROOT" or tree[pos].label() == "IP":
-            proposal = traverse_right(tree, pos, path, pro)
+            proposal = traverse_right(tree, pos, path, pro,sentence,newsentence,dic)
             if proposal != (None, None):
                 return proposal
 
@@ -434,9 +516,9 @@ def walk_to_s(tree, pos):
 
 
 
-if __name__ == "__main__":
-    tree = Tree.fromstring('(ROOT(IP(VP(LCP(NP(ADJP (JJ 三角形))(NP (NN ABC)))(LC 中))(PU ，)(ADVP (AD AB))(VP (VC 是)(NP(DNP(NP (PN 它))(DEG 的))(NP (NN 中点)))))))')
-    tree.draw()
-    tree, pos = hobbs([tree], (0,0,3,1,0,0,0))
-    print("Proposed antecedent for '它':", tree[pos], '\n')
-    # demo()
+# if __name__ == "__main__":
+#     tree = Tree.fromstring('(ROOT(IP(VP(LCP(NP(ADJP (JJ 三角形))(NP (NN ABC)))(LC 中))(PU ，)(ADVP (AD AB))(VP (VC 是)(NP(DNP(NP (PN 它))(DEG 的))(NP (NN 中点)))))))')
+#     tree.draw()
+#     tree, pos = hobbs([tree], (0,0,3,1,0,0,0))
+#     print("Proposed antecedent for '它':", tree[pos], '\n')
+#     # demo()
